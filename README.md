@@ -62,7 +62,6 @@ Classic:
     Y = mX + c
 
 We can code this and teach the machine to find optimal `m` and `c`.  
-Yes, it’s ML. No, it’s not sexy. Yes, it works.
 
 ---
 
@@ -102,8 +101,6 @@ Gaussian Processes:
 - Fit to the *covariance* of the data
 
 GPs are flexible and give you uncertainty estimates — no extra work needed.
-
-They’re expensive, but nice.
 
 ---
 
@@ -196,7 +193,7 @@ Examples: variable star classification, anomaly detection, etc.
 
 ## Generative AI in Science
 
-Fake data, real insight:
+Synthetic data, real insight:
 
 - Synthetic light curves
 - Interpolation and extrapolation
@@ -225,7 +222,7 @@ Bad at:
 - Interpretability
 - Small-data efficiency
 
-You’ll see them in GPT, BERT, T5, and basically every 2020s paper.
+You’ll see them in GPT, BERT, T5, and basically every 2020s ML paper.
 
 ---
 
