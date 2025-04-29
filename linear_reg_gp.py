@@ -1,225 +1,90 @@
 import numpy as np
-import pandas as pd
 import matplotlib.pyplot as plt
-import tensorflow as tf
-from tensorflow import keras
-import autograd.numpy as np
 from scipy.optimize import minimize
 import celerite
 from celerite import terms
 import corner
 
+def generate_sinusoidal_data(n, amp, freq, noise_std, phase=0.0):
+    t = np.linspace(0, 10, n)
+    y_true = amp * np.sin(2 * np.pi * freq * t + phase)
+    y_obs = y_true + np.random.normal(0, noise_std, size=n)
+    y_err = np.full(n, noise_std)
+    return t, y_obs, y_err
 
-def generate_sinusoidal_data(num_points, amplitude, frequency, noise_std_dev):
-    x = np.linspace(0, 10, num_points)
-    noise = np.random.normal(0, noise_std_dev, num_points)
-    y = sinus_eq(amplitude, frequency, x) + noise
-    return x, y
+def build_gp(params, t, yerr):
+    log_S0, log_Q, log_omega0 = params
+    kernel = terms.SHOTerm(log_S0=log_S0, log_Q=log_Q, log_omega0=log_omega0)
+    gp = celerite.GP(kernel, mean=0.0)
+    gp.compute(t, yerr)
+    return gp
 
-
-def sinus_eq(amplitdue, frequency, x):
-    phase_shift = np.random.uniform(0, 2 * np.pi)  # Random phase shift
-    return amplitude * np.sin(frequency * x * np.pi + phase_shift)
-
-
-#make x y data
-def generate_linear_data(num_points, gradient, intercept, noise_std_dev):
-    rand_nums = np.random.rand(num_points)
-    x = 10 * rand_nums
-    noise = np.random.normal(0, noise_std_dev, num_points)
-    y = linear_eq(x, gradient, intercept) + noise
-    return x, y
-
-def linear_eq(X, m, c):
-    return m*X + c
-
-
-# Example usage
-num_points = 100  # Number of data points to generate
-gradient = 1 # User-defined gradient
-intercept = 0  # User-defined intercept
-noise_std_dev = 0.1  # Standard deviation of the noise
-frequency = 1/2
-amplitude = 2
-
-
-X, Ylin = generate_linear_data(num_points, gradient, intercept, noise_std_dev)
-X, Y = generate_sinusoidal_data(num_points, amplitude, frequency, noise_std_dev)
-
-mag = Y + linear_eq(X, 1,0)
-magerr = Y * (0.1 * np.random.normal(0,1))
-time = X
-
-class CustomTerm(terms.Term):
-	parameter_names = ("log_b", "log_c", "log_l", "log_P")
-
-	def get_real_coefficients(self, params):
-		log_b, log_c, log_l, log_P = params
-		c = np.exp(log_c)
-		return (
-			np.exp(log_c) * (1.0 + c) / (2.0 + c), np.exp(log_l),
-		)
-
-	def get_complex_coefficients(self, params):
-		log_b, log_c, log_l, log_P = params
-		c = np.exp(log_c)
-		return (
-			np.exp(log_b) / (2.0 + c), 0.0,	np.exp(log_l), 2*np.pi*np.exp(-log_P),
-		)
-
-
-def nll(p, y, gp):
-    gp.set_parameter_vector(p)
-    ll = gp.log_likelihood(y)
-    return -ll if np.isfinite(ll) else 1e25
-
-
-def grad_nll(p, y, gp):
-    gp.set_parameter_vector(p)
-    gll = gp.grad_log_likelihood(y)[1]
-    return -gll
-
-
-def lnprior(p):
-    return gp.log_prior()
-
-
-def lnprob(p, x, y):
-    lp = lnprior(p)
-    return lp + lnlike(p, x, y) if np.isfinite(lp) else -np.inf
-
-
-def lnlike(p, x, y):
-    ln_a, ln_b, ln_c, ln_p = p
-    p0 = np.array([ln_a, ln_b, ln_c, ln_p])
-    gp.set_parameter_vector(p0)
+def neg_log_likelihood(params, t, y, yerr):
     try:
-        ll = gp.log_likelihood(y)
+        gp = build_gp(params, t, yerr)
+        return -gp.log_likelihood(y)
     except:
-        ll = 1e25
-    return ll if np.isfinite(ll) else 1e25
+        return 1e25
 
+def main(
+    n_points=100,
+    amp=2.0,
+    period = 5.42069,
+    noise_std=0.1,
+    phase=np.pi/4,
+    normalize=True
+):
 
-def plot_psd(gp):
-    plt.loglog(GP_periods, gp.kernel.get_psd(GP_omega), ":k", label="model")
-    plt.xlim(GP_periods.min(), GP_periods.max())
+    freq = 1/period
+
+    t, y, yerr = generate_sinusoidal_data(n_points, amp, freq, noise_std, phase)
+    idx = np.argsort(t)
+    t, y, yerr = t[idx], y[idx], yerr[idx]
+
+    if normalize:
+        y = (y - np.mean(y)) / np.std(y)
+
+    init = [np.log(np.var(y)), np.log(1.0), np.log(2 * np.pi * freq)]
+    bounds = [
+        (np.log(1e-5), np.log(10.0)),
+        (np.log(0.5), np.log(100.0)),
+        (np.log(0.1), np.log(100.0))
+    ]
+
+    result = minimize(neg_log_likelihood, init, args=(t, y, yerr), bounds=bounds, method="L-BFGS-B")
+    gp = build_gp(result.x, t, yerr)
+
+    log_S0, log_Q, log_omega0 = result.x
+    S0 = np.exp(log_S0)
+    Q = np.exp(log_Q)
+    omega0 = np.exp(log_omega0)
+    period = 2 * np.pi / omega0
+    tau = Q / omega0
+
+    print("\nOptimized GP Parameters:")
+    print(f"Amplitude (S0)       = {S0:.4f}")
+    print(f"Quality factor (Q)   = {Q:.4f}")
+    print(f"ω₀ (rad/s)           = {omega0:.4f}")
+    print(f"Period (s)           = {period:.4f}")
+    print(f"Characteristic time  = {tau:.4f}")
+
+    # Forward prediction range
+    t_pred = np.linspace(t.min(), t.max() + period, 1200)
+    mu, var = gp.predict(y, t_pred, return_var=True)
+
+    plt.errorbar(t, y, yerr=yerr, fmt=".k", label="Data")
+    plt.plot(t_pred, mu, label="GP Prediction")
+    plt.fill_between(t_pred, mu - np.sqrt(var), mu + np.sqrt(var), alpha=0.3)
+    plt.xlabel("Time")
+    plt.ylabel("Flux (normalized)" if normalize else "Flux")
+    plt.title(f"GP Fit + Prediction (forward by 1 period ≈ {period:.2f})")
     plt.legend()
-    plt.xlabel("Period [day]")
-    plt.ylabel("Power [day ppt$^2$]")
+    plt.tight_layout()
+    plt.show()
 
+    samples = np.random.multivariate_normal(result.x, np.eye(3)*0.01, size=1000)
+    corner.corner(samples, labels=["log_S0", "log_Q", "log_omega0"], truths=result.x)
+    plt.show()
 
-# Setup the data
-sort = np.argsort(time)
-y = (np.array(mag) - min(mag)) / (max(mag) - min(mag))
-yerr = np.array(magerr)[sort]
-t = np.array(time)[sort]
-t_full = np.linspace(np.min(time), np.max(time), 1000)  # For plotting
-
-# Define priors
-log_b = 0.0
-log_c = 0.0
-log_l = 0.0
-log_P = np.log(10)
-log_slope = 0.0
-
-# Define bounds
-period_sigma = 2.0
-freqs = np.linspace(0.01,10,100000)
-GP_periods = 1 / freqs
-GP_omega = (2 * np.pi) / GP_periods
-bnds = ((np.log(0.01), np.log(2.0)),
-        (np.log(0.1), np.log(100.0)),
-        (np.log(0.0001), np.log(10.0)),
-        (np.log(1.0 / 10), np.log(1.0 / 0.001)))
-
-
-# Setup the GP class
-kernel = CustomTerm(log_b, log_c, log_l, log_P)
-#global gp
-gp = celerite.GP(kernel, mean=0.0)
-
-gp.compute(t,yerr)
-
-# Define initial params for optimization
-p0 = gp.get_parameter_vector()
-
-# Run optimization
-results = minimize(nll, p0, method='L-BFGS-B', jac=grad_nll, args=(y, gp), bounds=bnds)
-
-# Set optimized parameters to the GP
-gp.set_parameter_vector(results.x)
-
-
-# Get the samples array
-samples = np.vstack((np.exp(results.x[0]), np.exp(results.x[1]), -np.exp(results.x[2]), np.exp(results.x[3]))).T
-
-
-# Get the median values
-found_b_post = np.median(np.exp(results.x[0]))
-found_c_post = np.median(np.exp(results.x[1]))
-found_l_post = -1.0 * np.median(np.exp(results.x[2]))
-found_period_post = np.median(np.exp(results.x[3]))
-
-error_b_post = np.std(np.exp(results.x[0]))
-error_c_post = np.std(np.exp(results.x[1]))
-error_l_post = np.std(np.exp(results.x[2]))
-error_period_post = np.std(np.exp(results.x[3]))
-
-# Print the results
-print(f"b: {found_b_post} +/- {error_b_post}")
-print(f"c: {found_c_post} +/- {error_c_post}")
-print(f"l: {found_l_post} +/- {error_l_post}")
-print(f"Period: {found_period_post} +/- {error_period_post}")
-
-
-
-
-
-
-
-
-# Assuming you have the optimized parameters stored in 'results.x'
-optimized_params = results.x
-
-# Setup the GP class with optimized parameters
-kernel = CustomTerm(*optimized_params[:4])
-gp = celerite.GP(kernel, mean=0.0)
-gp.compute(t, yerr)
-
-
-
-
-
-# Generate samples from the posterior using the optimized parameters
-samples = gp.sample_conditional(y, t_full, size=1000)
-
-
-
-
-# Plot light curve with GP prediction
-plt.errorbar(t, y, yerr=yerr, fmt=".k", label="Data")
-plt.plot(t_full, np.median(samples, axis=0), label="GP Prediction")
-plt.fill_between(t_full, np.percentile(samples, 16, axis=0), np.percentile(samples, 84, axis=0), alpha=0.3)
-plt.xlabel("Time")
-plt.ylabel("Normalized Magnitude")
-plt.legend()
-plt.show()
-plt.clf()
-
-# Get the optimized parameter values
-found_b_post = np.exp(results.x[0])
-found_c_post = np.exp(results.x[1])
-found_l_post = -1.0 * np.exp(results.x[2])
-found_period_post = np.exp(results.x[3])
-
-# Reshape the samples array
-reshaped_samples = np.exp(samples).reshape((-1, 4))
-
-# Create labels for the corner plot
-labels = ["b", "c", "l", "Period"]
-
-# Create the corner plot
-figure = corner.corner(reshaped_samples, labels=labels, truths=[found_b_post, found_c_post, found_l_post, found_period_post])
-
-# Display the plot
-plt.show()
+if __name__ == "__main__":
+    main()
